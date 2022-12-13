@@ -98,6 +98,19 @@ def draw_color_sk(l, c, rect):
     img = (img*255).astype(np.uint8)
     return Image.fromarray(img)
 
+def use_luma(l, color):
+    l = np.array(l.convert('RGB'))
+    lab = cv2.cvtColor(l, cv2.COLOR_RGB2LAB)
+    l = lab[:, :, 0:1]
+    draw = np.array(color).astype(np.uint8)
+    if len(draw.shape) == 1:
+        draw = np.expand_dims(draw, axis=[0, 1])
+    draw = cv2.cvtColor(draw, cv2.COLOR_RGB2LAB)
+    ab = draw[:, :, 1:3]
+    lab = np.concatenate([l, ab], axis=2)
+    img = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    return Image.fromarray(img)
+
 def draw_color(l, color, rect):
     y0, y1, x0, x1 = rect
     l = np.array(l.convert('RGB'))

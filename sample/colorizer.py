@@ -60,6 +60,79 @@ class Colorizer():
 
 
     @torch.no_grad()
+    def sample_gui(self, image, strokes, topk, prior_image=None, mask_indices=None, sample_indices=None, progress=None):
+        image = image.convert('L')
+        x_gray = preprocess(image, self.img_size).to(self.device)
+
+        if len(strokes) > 0:
+            cond = []
+            cond_indices = []
+            for stk in strokes:
+                ind = stk['index']
+                ind = torch.Tensor([0, ind[0]//16, ind[1]//16]).long().to(self.device)
+                color = stk['color']
+                color = torch.Tensor(color).to(self.device)
+                color = color / 255.0 * 2.0 - 1.0
+                cond.append(color.unsqueeze(0))
+                cond_indices.append(ind.unsqueeze(0))
+            cond = torch.cat(cond, axis=0)
+            cond_indices = torch.cat(cond_indices, axis=0)
+        else:
+            cond = None
+            cond_indices = None
+
+        if prior_image == None:
+            _, f_gray = self.transformer.chroma_vqgan.encode(None, x_gray)
+            rows, cols = f_gray.shape[2:4]
+            color_idx = self.transformer.mask_token * torch.ones([1, rows, cols]).to(f_gray.device).long()  # default mask token
+        else:
+            prior_image = prior_image.convert('RGB')
+            x_prior = preprocess(prior_image, self.img_size).to(self.device)
+            color_idx, f_gray = self.transformer.chroma_vqgan.encode(x_prior, x_gray)
+            rows, cols = f_gray.shape[2:4]
+            color_idx = color_idx.reshape(color_idx.shape[0], rows, cols)
+        
+        # Mask indices
+        if mask_indices != None:
+            for [r, c] in mask_indices:
+                color_idx[:, r, c] = self.transformer.mask_token
+
+        # Sample indices
+        if sample_indices == None:
+            sample_indices = []
+            for r in range(rows):
+                for c in range(cols):
+                    sample_indices.append([r, c])
+
+        for i, [r, c] in enumerate(sample_indices):  # autoregressive process
+            # Input gray feature
+            cond_gray = f_gray.clone()
+            cond_gray = cond_gray.reshape(cond_gray.shape[0], cond_gray.shape[1], -1)
+            cond_gray = cond_gray.permute(0, 2, 1).contiguous()
+            # Input color indices
+            idx = color_idx.clone()
+
+            logits = self.transformer.hybrid_tran(idx, cond_gray, cond, cond_indices)
+            logits = logits.view(logits.shape[0], rows, cols, -1)
+            logits = logits[:, r, c, :]  # select target pixel
+            logits = logits.reshape(-1, logits.shape[-1])
+            logits = self.transformer.top_k_logits(logits, topk)
+            probs = F.softmax(logits, dim=-1)
+            ix = torch.multinomial(probs, num_samples=1)
+            color_idx[:, r, c] = ix
+
+            if progress is not None:
+                progress.emit(int(100 * (i+1) / len(sample_indices)))
+
+        gen = self.transformer.chroma_vqgan.decode(color_idx, f_gray)
+        gen = output_to_pil(gen[0])
+        gen_resize = gen.resize(image.size)
+        gen_with_luma = use_luma(image.convert('RGB'), gen_resize)
+
+        # Intact output, After resize, After luma-enhancement
+        return gen, gen_resize, gen_with_luma 
+
+    @torch.no_grad()
     def sample(self, image, strokes, topk, prior_image=None, mask_indices=None, sample_indices=None, progress=None):
         image = image.convert('L')
         x_gray = preprocess(image, self.img_size).to(self.device)
@@ -84,7 +157,7 @@ class Colorizer():
         if prior_image == None:
             _, f_gray = self.transformer.chroma_vqgan.encode(None, x_gray)
             rows, cols = f_gray.shape[2:4]
-            color_idx = self.transformer.mask_token * torch.ones([1, rows, cols]).to(f_gray.device).long()
+            color_idx = self.transformer.mask_token * torch.ones([1, rows, cols]).to(f_gray.device).long()  # default mask token
         else:
             prior_image = prior_image.convert('RGB')
             x_prior = preprocess(prior_image, self.img_size).to(self.device)
@@ -104,7 +177,7 @@ class Colorizer():
                 for c in range(cols):
                     sample_indices.append([r, c])
 
-        for i, [r, c] in enumerate(sample_indices):
+        for i, [r, c] in enumerate(sample_indices):  # autoregressive process
             # Input gray feature
             cond_gray = f_gray.clone()
             cond_gray = cond_gray.reshape(cond_gray.shape[0], cond_gray.shape[1], -1)
@@ -114,7 +187,7 @@ class Colorizer():
 
             logits = self.transformer.hybrid_tran(idx, cond_gray, cond, cond_indices)
             logits = logits.view(logits.shape[0], rows, cols, -1)
-            logits = logits[:, r, c, :]
+            logits = logits[:, r, c, :]  # select target pixel
             logits = logits.reshape(-1, logits.shape[-1])
             logits = self.transformer.top_k_logits(logits, topk)
             probs = F.softmax(logits, dim=-1)
