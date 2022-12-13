@@ -1,3 +1,10 @@
+# comar's
+ckpt
+*.ckpt
+*.zip
+log.txt
+.jovianrc
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
